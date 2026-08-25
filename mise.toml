@@ -1,0 +1,43 @@
+[env]
+_.python.venv.path = ".venv"
+
+[tasks.setup]
+quiet = true
+run = """
+#!/usr/bin/env bash
+set -euo pipefail # enable strict error checking
+
+packages=(
+  doxygen
+  graphviz
+  texlive-latex
+  latexmk
+  texlive-collection-fontsrecommended
+  librsvg2-tools
+  ImageMagick
+)
+sudo dnf install -y "${packages[@]}"
+
+uv venv --allow-existing
+source .venv/bin/activate
+uv pip install -U -r doc/requirements.txt
+
+# These dependencies are "undocumented", or rather, they would be installed
+# by a regular Zephyr development setup, which I'm skipping for now.
+uv pip install jsonschema tabulate west natsort pyelftools junitparser psutil reuse
+
+# This will create the directory `../.west`. Absolute madness.
+if ! test -d ../.west ; then
+  west init --local
+fi
+# This will download all modules. Not sure how to suppress.
+west update
+"""
+
+[tasks."doc:make"]
+dir = "doc"
+run = "make html"
+
+[tasks."doc:serve"]
+dir = "doc"
+run = "python -m http.server -d _build/html/"
