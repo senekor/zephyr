@@ -23,7 +23,7 @@ communication possible. The bus implements message-passing and publish/subscribe
 paradigms that enable threads to communicate synchronously or asynchronously through shared memory.
 
 The communication through zbus is channel-based. Threads (or callbacks) use channels to exchange
-messages. Additionally, besides other actions, threads can publish and observe channels. When a
+messages. Additionally, besides other actions, threads can publish on and observe channels. When a
 thread publishes a message on a channel, the bus will make the message available to all the
 published channel's observers. Based on the observer's type, it can access the message directly,
 receive a copy of it, or even receive only a reference of the published channel.
@@ -41,12 +41,20 @@ from each other because they only use zbus channels and do not need to know each
 
 The bus comprises:
 
-* Set of channels that consists of the control metadata information, and the message itself;
+TODO: explain what the "message" is here. -> every channel has space to store exactly one message.
+(the "current" one?). not sure yet how it is accessed, when it is valid etc.
+
+* A set of channels, each of which consists of some control metadata and space for a single message;
+  TODO: is it ok to say there is only _space_ for a message? IMO there doesn't _have_ to be a message,
+  for example initially, there might not be one.
 * :dfn:`Virtual Distributed Event Dispatcher` (VDED), the bus logic responsible for sending
   notifications/messages to the observers. The VDED logic runs inside the publishing action in the same
   thread context, giving the bus an idea of a distributed execution. When a thread publishes to a
   channel, it also propagates the notifications to the observers;
-* Threads (subscribers and message subscribers), callbacks (listeners), and async listeners
+* TODO: "threads [...] publishing" sounds like publishing threads must be "registered", i.e. somehow
+  stored in the zbus. is this actually true? otherwise remove "publishing"
+  TODO: explain these four types of observers? or, does that come later?
+  Threads (subscribers and message subscribers), callbacks (listeners), and async listeners
   (callbacks deferred to a work queue) publishing, reading, and receiving notifications from the
   bus.
 
@@ -58,8 +66,8 @@ The bus comprises:
 
 The bus makes the publish, read, claim, finish, notify, and subscribe actions available over
 channels. Publishing, reading, claiming, and finishing are available in all RTOS thread contexts
-and ISRs. The publish and read operations are simple and fast; the procedure is channel
-locking followed by a memory copy to and from a shared memory region and then a channel unlocking.
+and ISRs. The publish and read operations are simple and fast; first, the the channel is locked,
+followed by a memory copy to and from a shared memory region, and finally the channel is unlocked.
 Another essential aspect of zbus is the observers. There are four types of observers:
 
 .. figure:: images/zbus_type_of_observers.svg
@@ -68,15 +76,21 @@ Another essential aspect of zbus is the observers. There are four types of obser
 
     ZBus observers.
 
-* Listeners, a callback that the event dispatcher executes every time an observed channel is
-  published or notified;
-* Async Listeners, a callback that the event dispatcher schedules to execute in a work
-  queue (system work queue by default) every time an observed channel is published or notified;
-* Subscriber, a thread-based observer that relies internally on a message queue where the event
+* Listener: a callback that the event dispatcher executes every time an observed channel is
+  published on or notified;
+* Async Listener: a callback that the event dispatcher schedules to execute in a work
+  queue (system work queue by default) every time an observed channel is published on or notified;
+* Subscriber: a thread-based observer that relies internally on a message queue where the event
   dispatcher puts a changed channel's reference every time an observed channel is published or
   notified. Note this kind of observer does not receive the message itself. It should read the
-  message from the channel after receiving the notification;
-* Message subscribers, a thread-based observer that relies internally on a FIFO where the event
+  message from the channel after receiving the notification; TODO: how can this possibly be used
+  reliably? by the time the subscirber reads the message, it may already have changed. ideas:
+  * the subscriber has higher priority than any of the channel publishers. thus, the receiving of a
+    message will surely happen before any other message is sent.
+  * the subscriber doesn't actually need to read any message data, it just needs to know that
+    something happened. the subscriber can still know how many times something happened using the
+    number of items in its message queue.
+* Message subscriber: a thread-based observer that relies internally on a FIFO where the event
   dispatcher puts a copy of the message every time an observed channel is published or notified.
 
 Channel observation structures define the relationship between a channel and its observers. For
@@ -101,18 +115,18 @@ sending notifications from channel ``C3``. In (d), the event dispatcher will sto
 notifications from channels ``C3`` and ``C5`` to ``Subscriber 1``.
 
 
-Suppose a usual sensor-based solution is in the figure below for illustration purposes. When
-triggered, the timer publishes to the ``Trigger`` channel. As the sensor thread subscribed to the
-``Trigger`` channel, it receives the sensor data. Notice the VDED executes the ``Blink`` because it
-also listens to the ``Trigger`` channel. When the sensor data is ready, the sensor thread publishes
-it to the ``Sensor data`` channel. The core thread receives the message as a ``Sensor data`` channel
-message subscriber, processes the sensor data, and stores it in an internal sample buffer. It
-repeats until the sample buffer is full; when it happens, the core thread aggregates the sample
-buffer information, prepares a package, and publishes that to the ``Payload`` channel. The LoRa
-thread receives that because it is a ``Payload`` channel message subscriber and sends the payload to
-the cloud. When it completes the transmission, the LoRa thread publishes to the ``Transmission
-done`` channel. The VDED executes the ``Blink`` again since it listens to the ``Transmission done``
-channel.
+The figure below illustrates a common, sensor-based application for illustration purposes. When
+triggered, the timer publishes to the ``Trigger`` channel. Once the sensor thread is notified, since
+it is a subscriber of the ``Trigger`` channel, it proceeds to read the sensor data. Notice the VDED
+also executes the callback of ``Blink``, a listener on the ``Trigger`` channel. When the sensor data
+is ready, the sensor thread publishes it to the ``Sensor data`` channel. The core thread receives
+the message as a ``Sensor data`` channel message subscriber, processes the sensor data, and stores
+it in an internal sample buffer. It repeats until the sample buffer is full; when that happens,
+the core thread aggregates the sample buffer information, prepares a package, and publishes that to
+the ``Payload`` channel. The LoRa thread receives that, because it is a ``Payload`` channel message
+subscriber, and sends the payload to the cloud. When it completes the transmission, the LoRa thread
+publishes to the ``Transmission done`` channel. The VDED executes the callback of ``Blink`` again,
+since it also listens to the ``Transmission done`` channel.
 
 .. figure:: images/zbus_operations.svg
     :alt: ZBus sensor-based application
@@ -121,29 +135,31 @@ channel.
     ZBus sensor-based application.
 
 This way of implementing the solution makes the application more flexible, enabling us to change
-things independently. For example, we want to change the trigger from a timer to a button press. We
-can do that, and the change does not affect other parts of the system. Likewise, we would like to
-change the communication interface from LoRa to Bluetooth; we only need to change the LoRa thread.
-No other change is required in order to make that work. Thus, the developer would do that for every
-block of the image. Based on that, this indicates that zbus promotes decoupling in the system
-architecture.
+things independently. For example, assume we want to change the trigger from a timer to a button
+press. We can do that, and the change does not affect other parts of the system. Likewise, if we
+would like to change the communication interface from LoRa to Bluetooth; we only need to change
+the LoRa thread. The ability to change one aspect of the solution without requiring changes to the
+others demonstrates how zbus promotes decoupling in the system architecture.
 
 Another important aspect of using zbus is the reuse of system modules. If a code portion with
-well-defined behaviors (we call that module) only uses zbus channels and not hardware interfaces, it
-can easily be reused in other solutions. The new solution must implement the interfaces (set of
-channels) the module needs to work. That indicates zbus could improve the module reuse.
+well-defined behaviors (which we call a module) only uses zbus channels and not hardware interfaces,
+it can easily be reused in other solutions. The new solution must implement the interfaces (set of
+channels) the module needs to work. That shows how zbus can improve module reuse.
 
 The last important note is the flexibility of zbus. Zbus provides many features that give developers
 freedom to create solutions that fit their specific needs. These features include:
 
-* Messages can be dynamically or statically allocated
-* Notifications can be synchronous or asynchronous
-* Channels can be controlled in various ways by claiming them
-* Custom metadata can be added to channels using the user-data field
-* Optional validators can be used to enforce message format accuracy
+* Messages can be dynamically or statically allocated.
+* Notifications can be synchronous or asynchronous.
+* Channels can be controlled in various ways by claiming them.
+  TODO: what does it mean to claim a channel? not explained so far.
+* Custom metadata can be added to channels using the user-data field.
+* Optional validators can be used to enforce message format accuracy.
 
 These characteristics expand the range of solutions that can be built with zbus and make it
 well-suited as an open-source community tool.
+                  ^^^^^^^^^^^^^^^^^^^^^
+                  what ???
 
 .. _Virtual Distributed Event Dispatcher:
 
@@ -151,7 +167,7 @@ Virtual Distributed Event Dispatcher
 ====================================
 
 The VDED execution always happens in the publisher's context. It can be a thread or an ISR. Be
-careful with publications inside ISR because the scheduler won't preempt the VDED. Use that wisely.
+careful when publishing inside an ISR, because the scheduler won't preempt the VDED.
 The basic description of the execution is as follows:
 
 
@@ -159,6 +175,7 @@ The basic description of the execution is as follows:
 * The channel receives the new message via direct copy (by a raw :c:func:`memcpy`);
 * The event dispatcher logic executes the listeners, sends a copy of the message to the message
   subscribers, and pushes the channel's reference to the subscribers' notification message queue in
+  TODO: is "channel observers' list" accurate?
   the same sequence they appear on the channel observers' list. The listeners can perform non-copy
   quick access to the constant message reference directly (via the :c:func:`zbus_chan_const_msg`
   function) since the channel is still locked;
@@ -167,7 +184,7 @@ The basic description of the execution is as follows:
 
 To illustrate the VDED execution, consider the example illustrated below. We have four threads in
 ascending priority ``S1``, ``MS2``, ``MS1``, and ``T1`` (the highest priority); two listeners,
-``L1`` and ``L2``; and channel A. Supposing ``L1``, ``L2``, ``MS1``, ``MS2``, and ``S1`` observe
+``L1`` and ``L2``; and channel A. ``L1``, ``L2``, ``MS1``, ``MS2``, and ``S1`` observe
 channel A.
 
 .. figure:: images/zbus_publishing_process_example_scenario.svg
@@ -177,13 +194,13 @@ channel A.
     ZBus VDED execution example scenario.
 
 
-The following code implements channel A. Note the ``struct a_msg`` is illustrative only.
+The following code implements channel A. The definition of ``struct a_msg`` is omitted.
 
 .. code-block:: c
 
-    ZBUS_CHAN_DEFINE(a_chan,                       /* Name */
+    ZBUS_CHAN_DEFINE(
+             a_chan,                               /* Name */
              struct a_msg,                         /* Message type */
-
              NULL,                                 /* Validator */
              NULL,                                 /* User Data */
              ZBUS_OBSERVERS(L1, L2, MS1, MS2, S1), /* observers */
@@ -237,6 +254,8 @@ priority.
      - The VDED pushes the notification message to the queue of S1. Notice the thread gets ready to
        execute right after receiving the notification. However, it goes to a pending state because
        it cannot access the channel since it is still locked.
+       TODO: doesn't it go into pending state, because it has lower priority than T1, just like MS1
+       and MS2?
 
    * - i
      - VDED finishes the publishing by unlocking channel A. The MS1 leaves the pending state and
@@ -266,7 +285,7 @@ channel A. The scenario considers the following priorities: T1 < MS1 < MS2 < S1.
 
     ZBus VDED execution detail for priority T1 < MS1 < MS2 < S1.
 
-Thus, the table below describes the activities (represented by a letter) of the VDED execution.
+The table below describes the activities (represented by a letter) of the VDED execution.
 
 .. list-table:: VDED execution steps in detail for priority T1 < MS1 < MS2 < S1.
    :widths: 5 65
@@ -289,6 +308,13 @@ Thus, the table below describes the activities (represented by a letter) of the 
    * - f
      - The VDED copies the message and sends that to MS1. MS1 preempts T1 and starts working.
        After that, the T1 regains the CPU.
+       TODO: why does MS1 receive the message before MS2? Doesn't MS2 have higher priority?
+       Hypothesis: Observers are stored in a linked list, not ordered by priority. HLP (highest
+       lock protocol) ensures that _subscribers_ are executed after publish is done, in order of
+       priority. however: what about listeners? those are executed in the publisher context. do they
+       even have a priority? or is their priority simply the one of the publishing thread? (or, the
+       HOP of the channel) What about async listeners? does the priority of a workqueue to which an
+       async listener belongs count toward the HLP?
 
    * - g
      - The VDED copies the message and sends that to MS2. MS2 preempts T1 and starts working.
@@ -296,6 +322,10 @@ Thus, the table below describes the activities (represented by a letter) of the 
 
    * - h
      - The VDED pushes the notification message to the queue of S1.
+       TODO: Does the kernel have "special knowledge" of channels being
+       locked? or will the higher priority subscriber be switched to, then attempt to grab the lock,
+       and immediately block again? is the kernel smart enough to prevent this by only waking up the
+       high-priority subscriber when the channel lock is released?
 
    * - i
      - VDED finishes the publishing by unlocking channel A.
@@ -331,6 +361,7 @@ channel A. The scenario considers the priority boost feature and the following p
 
     ZBus VDED execution detail with priority boost enabled and for priority T1 < MS1 < MS2 < S1.
 
+TODO: fix this paragraph
 To properly use the priority boost, attaching the observer to a thread is necessary. When the
 subscriber is attached to a thread, it assumes its priority, and the priority boost algorithm will
 consider the observer's priority. The following code illustrates the thread-attaching function.
@@ -379,6 +410,7 @@ In summary, the benefits of the feature are:
   lock mechanism;
 * The Highest Locker Protocol's major disadvantage, the Inheritance-related Priority Inversion, is
   acceptable in the zbus scenario since it will ensure a small bus latency.
+  -> What?
 
 
 Limitations
@@ -386,7 +418,7 @@ Limitations
 
 Based on the fact that developers can use zbus to solve many different problems, some challenges
 arise. ZBus will not solve every problem, so it is necessary to analyze the situation to be sure
-zbus is applicable. For instance, based on the zbus benchmark, it would not be well suited to a
+zbus is appropriate. For instance, based on the zbus benchmark, it would not be well suited to a
 high-speed stream of bytes between threads. The :ref:`Pipe <pipes_v2>` kernel object solves this
 kind of need.
 
