@@ -23,7 +23,7 @@ communication possible. The bus implements message-passing and publish/subscribe
 paradigms that enable threads to communicate synchronously or asynchronously through shared memory.
 
 The communication through zbus is channel-based. Threads (or callbacks) use channels to exchange
-messages. Additionally, besides other actions, threads can publish and observe channels. When a
+messages. Additionally, besides other actions, threads can publish on and observe channels. When a
 thread publishes a message on a channel, the bus will make the message available to all the
 published channel's observers. Based on the observer's type, it can access the message directly,
 receive a copy of it, or even receive only a reference of the published channel.
